@@ -8,16 +8,13 @@ import org.springframework.ldap.core.LdapTemplate;
 import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.ldap.query.LdapQuery;
 import org.springframework.ldap.query.LdapQueryBuilder;
-import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.InsufficientAuthenticationException;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import javax.naming.NamingEnumeration;
 import javax.naming.NamingException;
@@ -25,8 +22,8 @@ import javax.naming.directory.Attributes;
 import java.util.ArrayList;
 import java.util.List;
 
-@Component
-public class CustomAuthenticationProvider implements AuthenticationProvider {
+@Service
+public class LdapService {
 
     @Value("${ldap.url}")
     private String ldapUrl;
@@ -40,11 +37,29 @@ public class CustomAuthenticationProvider implements AuthenticationProvider {
     @Value("${ldap.password}")
     private String ldapPrincipalPassword;
 
-    @Override
-    public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+    @Value("${ldap.user.dn.pattern}")
+    private String ldapDnPattern;
 
-        String username = authentication.getName();
-        String password = (String) authentication.getCredentials();
+    public List<GrantedAuthority> getRoles(String username) {
+        LdapQuery groupQuery = LdapQueryBuilder.query().base(ldapBaseDn)
+                .where("objectclass").is("groupOfUniqueNames");
+
+        List<Group> groupList = getLdapTemplate().search(groupQuery, new GroupAttributesMapper());
+
+        System.out.println(username);
+        List<GrantedAuthority> authorities = new ArrayList<>();
+        for (Group group : groupList) {
+            if (group.getUniqueMembers().contains("uid=" + username + "," + ldapBaseDn)) {
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + group.getName().toUpperCase()));
+                System.out.println(group.getName());
+            }
+        }
+
+
+        return authorities;
+    }
+
+    public void authenticateUser(String username, String password) {
         LdapQuery query = LdapQueryBuilder.query()
                 .base(ldapBaseDn)
                 .where("objectclass").is("inetOrgPerson")
@@ -61,35 +76,16 @@ public class CustomAuthenticationProvider implements AuthenticationProvider {
         } catch (OperationNotSupportedException e) {
             throw new InsufficientAuthenticationException("Password Required!");
         }
-
-        UsernamePasswordAuthenticationToken result = new UsernamePasswordAuthenticationToken(
-                username, password,
-                getRoles(username));
-
-        result.setDetails(authentication.getDetails());
-
-        return result;
     }
 
-    @Override
-    public boolean supports(Class<?> authentication) {
-        return authentication.equals(UsernamePasswordAuthenticationToken.class);
-    }
-
-    public List<GrantedAuthority> getRoles(String username) {
-        LdapQuery groupQuery = LdapQueryBuilder.query().base(ldapBaseDn)
-                .where("objectclass").is("groupOfUniqueNames");
-
-        List<Group> groupList = getLdapTemplate().search(groupQuery, new GroupAttributesMapper());
-
-        List<GrantedAuthority> authorities = new ArrayList<>();
-        for (Group group : groupList) {
-            if (group.getUniqueMembers().contains("uid=" + username + "," + ldapBaseDn)) {
-                authorities.add(new SimpleGrantedAuthority("ROLE_" + group.getName().toUpperCase()));
-            }
-        }
-
-        return authorities;
+    public void configureLdapAuthentication(AuthenticationManagerBuilder auth) throws Exception {
+        auth.ldapAuthentication()
+                .contextSource()
+                .url(ldapUrl + ldapBaseDn)
+                .managerDn(ldapSecurityPrincipal)
+                .managerPassword(ldapPrincipalPassword)
+                .and()
+                .userDnPatterns(ldapDnPattern);
     }
 
     private class GroupAttributesMapper implements AttributesMapper {
